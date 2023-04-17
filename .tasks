@@ -1,0 +1,8 @@
+# vim: set fenc=utf-8 ft=dosini:
+
+[build]
+command/linux=make -j
+cwd=$(VIM_ROOT)/build
+output=quickfix
+errorformat=%f:%l:%m
+save=1
