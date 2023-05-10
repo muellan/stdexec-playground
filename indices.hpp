@@ -85,7 +85,7 @@ public:
 
         [[nodiscard]] constexpr friend iterator
         operator + (difference_type offset, iterator it) noexcept { 
-            return iterator{it.i_ + offset}; 
+            return iterator{offset + it.i_}; 
         }
 
         [[nodiscard]] constexpr friend iterator
@@ -95,7 +95,7 @@ public:
 
         [[nodiscard]] constexpr friend iterator
         operator - (difference_type offset, iterator it) noexcept { 
-            return iterator{it.i_ - offset}; 
+            return iterator{offset - it.i_}; 
         }
 
         [[nodiscard]] friend constexpr
@@ -137,7 +137,19 @@ public:
 
     [[nodiscard]] constexpr
     iterator end () const noexcept { return iterator{end_}; }
+
+
+    [[nodiscard]] friend constexpr
+    iterator begin (index_range const& r) noexcept { return r.begin(); }
+
+    [[nodiscard]] friend constexpr
+    iterator end (index_range const& r) noexcept { return r.end(); }
 };
+
+
+
+[[nodiscard]] inline constexpr auto
+view_of (index_range const& s) noexcept { return s; }
 
 
 

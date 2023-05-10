@@ -5,19 +5,25 @@
 #include "execution.hpp"
 #include "span2d.hpp"
 #include "indices.hpp"
+#include "storage.hpp"
 #include <type_traits>
+
+#ifdef USE_GPU
+    #include <thrust/device_vector.h>
+    #include <thrust/reduce.h>
+#endif
 
 #ifdef _OPENMP
     #include <omp.h>
 #endif
 
 #include <concepts>
+#include <span>
 #include <array>
 #include <algorithm>
 #include <execution>
 #include <numeric>
 #include <ranges>
-#include <span>
 #include <utility>
 
 
@@ -66,8 +72,16 @@ concept NearestNeighborFn =
 
 
 template <typename Fn, typename T>
+concept ReductionOperation =
+    std::copy_constructible<Fn> &&
+    std::invocable<Fn,T,T> &&
+    std::convertible_to<T,std::invoke_result_t<Fn,T,T>>;
+
+
+
+template <typename Fn, typename T>
 concept PairReductionOperation =
-    (std::floating_point<T> || std::signed_integral<T>) &&
+    std::copy_constructible<Fn> &&
     std::invocable<Fn,T,T,T> &&
     std::convertible_to<T,std::invoke_result_t<Fn,T,T,T>>;
 
@@ -111,7 +125,7 @@ void inclusive_scan (
                 [=] (double& e) { e = part[i] + e; });
         }) ;
 
-    stdexec::sync_wait(task).value();
+    stdexec::sync_wait(std::move(task)).value();
 }
 
 
@@ -200,42 +214,47 @@ void transform_matrix_nearest_neigbors (
             if (stripeIdx % 2) { compute_stripe(stripeIdx, m); }
         });
         
-    stdexec::sync_wait(task).value();
+    stdexec::sync_wait(std::move(task)).value();
 }
+
+
+
 
 
 
 
 //-----------------------------------------------------------------------------
-template <typename Input, typename Body>
+template <typename InRange, typename Body>
 requires 
-    std::ranges::random_access_range<Input> &&
-    std::ranges::sized_range<Input> &&
+    std::ranges::random_access_range<InRange> &&
+    std::ranges::sized_range<InRange> &&
     std::copy_constructible<Body> &&
-    std::invocable<Body,std::ranges::range_value_t<Input>>
-void for_each (Execution_Context ctx, Input const& input, Body body)
+    std::invocable<Body,std::ranges::range_value_t<InRange>>
+void for_each (Execution_Context ctx, InRange&& input, Body body)
 {
-    auto const size      = std::ranges::size(input);
-    auto const tileCount = std::min(size, static_cast<std::size_t>(ctx.resource_shape().threads));
-    auto const tileSize  = (size + tileCount - 1) / tileCount;
+    using size_t_ = std::ranges::range_size_t<InRange>;
 
-    auto sched = ctx.get_scheduler();
+    auto const size        = std::ranges::size(input);
+    auto const threadCount = std::min(size, static_cast<size_t_>(ctx.resource_shape().threads));
+    auto const tileSize    = (size + threadCount - 1) / threadCount;
+    auto const tileCount   = (size + tileSize - 1) / tileSize;
 
-    auto task = stdexec::schedule(sched) 
-    |   stdexec::bulk(tileCount, [&](std::size_t tileIdx)
+    auto task = 
+        stdexec::transfer_just(ctx.get_scheduler(),
+                               view_of(std::forward<InRange>(input))) 
+    |   stdexec::bulk(tileCount,
+        [=](std::size_t tileIdx, auto in)
         {
-            auto const end = std::ranges::begin(input) 
-                           + std::min(size, (tileIdx + 1) * tileSize);
+            auto const start = begin(in) + tileIdx * tileSize;
+            auto const end   = begin(in) + std::min(size, (tileIdx + 1) * tileSize);
 
-            for (auto i = std::ranges::begin(input) + tileIdx * tileSize; i != end; ++i) 
-            {
+            for (auto i = start; i < end; ++i) {
                 body(*i);
             }
         });
 
-    stdexec::sync_wait(task).value();
+    stdexec::sync_wait(std::move(task)).value();
 }
-
 
 
 
@@ -246,18 +265,19 @@ requires
     std::copy_constructible<Body>
 void for_each_grid_index (Execution_Context ctx, GridExtents ext, Body body)
 {
+    using size_t_ = std::ranges::range_size_t<GridExtents>;
+
     // size of collapsed index range
-    std::size_t size = 1;
-    for (auto x : ext) { size *= static_cast<std::size_t>(x); }
+    size_t_ size = 1;
+    for (auto x : ext) { size *= static_cast<size_t_>(x); }
     
     auto const N = static_cast<int>(ext.size());
-    auto const tileCount = std::min(size, static_cast<std::size_t>(ctx.resource_shape().threads));
-    auto const tileSize  = static_cast<std::size_t>((size + tileCount - 1) / tileCount);
+    auto const threadCount = std::min(size, static_cast<size_t_>(ctx.resource_shape().threads));
+    auto const tileSize    = static_cast<size_t_>((size + threadCount - 1) / threadCount);
+    auto const tileCount   = (size + tileSize - 1) / tileSize;
 
-    auto sched = ctx.get_scheduler();
-
-    auto task = stdexec::schedule(sched) 
-    |   stdexec::bulk(tileCount, [&](std::size_t tileIdx)
+    auto task = stdexec::schedule(ctx.get_scheduler())
+    |   stdexec::bulk(tileCount, [=](size_t_ tileIdx)
         {
             // start/end of collapsed index range
             auto const start = tileIdx * tileSize;
@@ -268,7 +288,7 @@ void for_each_grid_index (Execution_Context ctx, GridExtents ext, Body body)
             for (int i = 0; i < N; ++i) { idx[i] = 0; }
 
             if (start > 0) {
-                std::size_t mul[N];
+                size_t_ mul[N];
                 mul[0] = 1;
                 for (int i = 0; i < N-1; ++i) {
                     mul[i+1] = mul[i] * ext[i]; 
@@ -294,7 +314,7 @@ void for_each_grid_index (Execution_Context ctx, GridExtents ext, Body body)
             }
         });
 
-    stdexec::sync_wait(task).value();
+    stdexec::sync_wait(std::move(task)).value();
 }
 
 
@@ -305,26 +325,29 @@ template <typename OutRange, typename Generator>
 requires std::ranges::random_access_range<OutRange> &&
          std::ranges::sized_range<OutRange> &&
          IndexToValueMapping<Generator,OutRange>
-void generate_indexed (Execution_Context ctx, OutRange& out, Generator gen)
+void generate_indexed (Execution_Context ctx, OutRange & output, Generator gen)
 {
-    auto const outSize   = static_cast<std::size_t>(std::ranges::size(out));
-    auto const tileCount = std::min(outSize, static_cast<std::size_t>(ctx.resource_shape().threads));
+    using size_t_ = std::ranges::range_size_t<OutRange>;
 
-    auto sched = ctx.get_scheduler();
+    auto const outSize     = std::ranges::size(output);
+    auto const threadCount = std::min(outSize, static_cast<size_t_>(ctx.resource_shape().threads));
+    auto const tileSize    = (outSize + threadCount - 1) / threadCount;
+    auto const tileCount   = (outSize + tileSize - 1) / tileSize;
 
-    auto task = stdexec::schedule(sched)
-    |   stdexec::bulk(tileCount, [&](std::size_t tileIdx)
+    auto task =
+        stdexec::transfer_just(ctx.get_scheduler(), view_of(output))
+    |   stdexec::bulk(tileCount,
+        [=](size_t_ tileIdx, auto out)
         {
-            auto const size  = (outSize + tileCount-1) / tileCount;
-            auto const start = tileIdx * size;
-            auto const end   = std::min(outSize, (tileIdx + 1) * size);
+            auto const start = tileIdx * tileSize;
+            auto const end   = std::min(outSize, (tileIdx + 1) * tileSize);
 
             for (auto i = start; i < end; ++i) {
                 out[i] = gen(i);
             }
         });
 
-    stdexec::sync_wait(task).value();
+    stdexec::sync_wait(std::move(task)).value();
 }
 
 
@@ -337,26 +360,32 @@ requires std::ranges::random_access_range<InRange> &&
          std::ranges::random_access_range<OutRange> &&
          std::ranges::sized_range<OutRange> &&
          std::copy_constructible<Transf>
-void transform (Execution_Context ctx, InRange const& in, OutRange& out, Transf fn)
+void transform (
+    Execution_Context ctx, InRange const& input, OutRange & output, Transf fn)
 {
-    auto const size      = static_cast<std::size_t>(std::ranges::size(in));
-    auto const tileCount = std::min(size, static_cast<std::size_t>(ctx.resource_shape().threads));
-    auto const tileSize  = (size + tileCount-1) / tileCount;
+    using size_t_ = std::common_type_t<std::ranges::range_size_t<InRange>,
+                                       std::ranges::range_size_t<OutRange>>;
 
-    auto sched = ctx.get_scheduler();
+    auto const inSize      = std::ranges::size(input);
+    auto const threadCount = std::min(inSize, static_cast<size_t_>(ctx.resource_shape().threads));
+    auto const tileSize    = (inSize + threadCount - 1) / threadCount;
+    auto const tileCount   = (inSize + tileSize - 1) / tileSize;
 
-    auto task = stdexec::schedule(sched)
-    |   stdexec::bulk(tileCount, [&](std::size_t tileIdx)
+    auto task = 
+        stdexec::transfer_just(ctx.get_scheduler(), 
+                               view_of(input), view_of(output) )
+    |   stdexec::bulk(tileCount,
+        [=](std::size_t tileIdx, auto in, auto out)
         {
             auto const start = tileIdx * tileSize;
-            auto const end   = std::min(size, (tileIdx + 1) * tileSize);
+            auto const end   = std::min(inSize, (tileIdx + 1) * tileSize);
 
             for (auto i = start; i < end; ++i) {
                 out[i] = fn(in[i]);
             }
         });
 
-    stdexec::sync_wait(task).value();
+    stdexec::sync_wait(std::move(task)).value();
 }
 
 
@@ -369,26 +398,32 @@ requires std::ranges::random_access_range<InRange> &&
          std::ranges::random_access_range<OutRange> &&
          std::ranges::sized_range<OutRange> &&
          std::copy_constructible<Transf>
-void transform_indexed (Execution_Context ctx, InRange const& in, OutRange& out, Transf fn)
+void transform_indexed (
+    Execution_Context ctx, InRange const& input, OutRange & output, Transf fn)
 {
-    auto const size      = static_cast<std::size_t>(std::ranges::size(in));
-    auto const tileCount = std::min(size, static_cast<std::size_t>(ctx.resource_shape().threads));
-    auto const tileSize  = (size + tileCount-1) / tileCount;
+    using size_t_ = std::common_type_t<std::ranges::range_size_t<InRange>,
+                                       std::ranges::range_size_t<OutRange>>;
 
-    auto sched = ctx.get_scheduler();
+    auto const inSize      = std::ranges::size(input);
+    auto const threadCount = std::min(inSize, static_cast<size_t_>(ctx.resource_shape().threads));
+    auto const tileSize    = (inSize + threadCount - 1) / threadCount;
+    auto const tileCount   = (inSize + tileSize - 1) / tileSize;
 
-    auto task = stdexec::schedule(sched)
-    |   stdexec::bulk(tileCount, [&](std::size_t tileIdx)
+    auto task = 
+        stdexec::transfer_just(ctx.get_scheduler(), 
+                               view_of(input), view_of(output) )
+    |   stdexec::bulk(tileCount,
+        [=](size_t_ tileIdx, auto in, auto out)
         {
             auto const start = tileIdx * tileSize;
-            auto const end   = std::min(size, (tileIdx + 1) * tileSize);
+            auto const end   = std::min(inSize, (tileIdx + 1) * tileSize);
 
             for (auto i = start; i < end; ++i) {
                 out[i] = fn(i,in[i]);
             }
         });
 
-    stdexec::sync_wait(task).value();
+    stdexec::sync_wait(std::move(task)).value();
 }
 
 
@@ -416,33 +451,35 @@ requires
     std::convertible_to<OutValue,std::invoke_result_t<Transf,Value1,Value2>>
 void zip_transform (
     Execution_Context ctx,
-    InRange1 const& in1,
-    InRange2 const& in2,
-    OutRange & out,
+    InRange1 const& input1,
+    InRange2 const& input2,
+    OutRange & output,
     Transf fn)
 {
-    auto const size = std::min(
-        std::min(std::ranges::size(in1), std::ranges::size(in2)),
-        std::ranges::size(out));
+    using size_t_ = std::common_type_t<std::ranges::range_size_t<InRange1>,
+                                       std::ranges::range_size_t<InRange2>>;
 
-    auto const tileCount = std::min(size, static_cast<std::size_t>(ctx.resource_shape().threads));
+    auto const inSize      = std::min(std::ranges::size(input1), std::ranges::size(input2));
+    auto const threadCount = std::min(inSize, static_cast<size_t_>(ctx.resource_shape().threads));
+    auto const tileSize    = (inSize + threadCount - 1) / threadCount;
+    auto const tileCount   = (inSize + tileSize - 1) / tileSize;
 
-    auto const tileSize = (size + tileCount-1) / tileCount;
-
-    auto sched = ctx.get_scheduler();
-
-    auto task = stdexec::schedule(sched)
-    |   stdexec::bulk(tileCount, [&](std::size_t tileIdx)
+    auto task = 
+        stdexec::transfer_just(ctx.get_scheduler(),
+                               view_of(input1), view_of(input2),
+                               view_of(output) )
+    |   stdexec::bulk(tileCount,
+        [=](size_t_ tileIdx, auto in1, auto in2, auto out)
         {
             auto const start = tileIdx * tileSize;
-            auto const end   = std::min(size, (tileIdx + 1) * tileSize);
+            auto const end   = std::min(inSize, (tileIdx + 1) * tileSize);
 
             for (auto i = start; i != end; ++i) {
-                out[i] = fn(in1[i],in2[i]);
+                out[i] = fn(in1[i], in2[i]);
             }
         });
 
-    stdexec::sync_wait(task).value();
+    stdexec::sync_wait(std::move(task)).value();
 }
 
 
@@ -469,76 +506,272 @@ requires
     std::invocable<Transf,Value1,Value2,OutValue&>
 void zip_transform (
     Execution_Context ctx,
-    InRange1 const& in1,
-    InRange2 const& in2,
-    OutRange & out,
+    InRange1 const& input1,
+    InRange2 const& input2,
+    OutRange & output,
     Transf fn)
 {
-    auto const size = std::min(
-        std::min(std::ranges::size(in1), std::ranges::size(in2)),
-        std::ranges::size(out));
+    using size_t_ = std::common_type_t<std::ranges::range_size_t<InRange1>,
+                                       std::ranges::range_size_t<InRange2>>;
 
-    auto const tileCount = std::min(size, static_cast<std::size_t>(ctx.resource_shape().threads));
-    auto const tileSize  = (size + tileCount - 1) / tileCount;
+    auto const inSize      = std::min(std::ranges::size(input1), std::ranges::size(input2));
+    auto const threadCount = std::min(inSize, static_cast<size_t_>(ctx.resource_shape().threads));
+    auto const tileSize    = (inSize + threadCount - 1) / threadCount;
+    auto const tileCount   = (inSize + tileSize - 1) / tileSize;
 
-    auto sched = ctx.get_scheduler();
-
-    auto task = stdexec::schedule(sched)
-    |   stdexec::bulk(tileCount, [&](std::size_t tileIdx)
+    auto task =
+        stdexec::transfer_just(ctx.get_scheduler(),
+                               view_of(input1), view_of(input2), view_of(output))
+    |   stdexec::bulk(tileCount,
+        [=](size_t_ tileIdx, auto in1, auto in2, auto out)
         {
             auto const start = tileIdx * tileSize;
-            auto const end   = std::min(size, (tileIdx + 1) * tileSize);
+            auto const end   = std::min(inSize, (tileIdx + 1) * tileSize);
             
             for (auto i = start; i < end; ++i) {
                 fn(in1[i], in2[i], out[i]);
             }
         });
 
-    stdexec::sync_wait(task).value();
+    stdexec::sync_wait(std::move(task)).value();
 }
 
 
 
 
 //-----------------------------------------------------------------------------
-[[nodiscard]] 
-double zip_reduce (
+#ifndef USE_GPU
+
+template <typename InRange, typename Result, typename ReductionOp>
+requires
+    std::ranges::random_access_range<InRange> &&
+    std::ranges::sized_range<InRange> &&
+    ReductionOperation<ReductionOp,Result>
+[[nodiscard]] Result 
+reduce (
     Execution_Context ctx,
-    std::span<double const> in1,
-    std::span<double const> in2,
-    double initValue,
-    PairReductionOperation<double> auto redOp)
+    InRange const& input, Result initValue, ReductionOp redOp)
 {
-    using ValueT = double;
+    using size_t_ = std::ranges::range_size_t<InRange>;
 
-    auto const inSize    = std::min(in1.size(), in2.size());
-    auto const tileCount = std::min(inSize, static_cast<std::size_t>(ctx.resource_shape().threads));
-    auto const tileSize  = (inSize + tileCount - 1) / tileCount;
+    auto const inSize      = std::ranges::size(input);
+    auto const threadCount = std::min(inSize, static_cast<size_t_>(ctx.resource_shape().threads));
+    auto const tileSize    = (inSize + threadCount - 1) / threadCount;
+    auto const tileCount   = (inSize + tileSize - 1) / tileSize;
 
-    std::vector<ValueT> partials(tileCount);
+    std::vector<Result> partials (tileCount, Result(0));
 
-    auto sched = ctx.get_scheduler();
-
-    auto task = stdexec::transfer_just(sched, std::move(partials))
+    auto task = stdexec::transfer_just(ctx.get_scheduler(),
+                                       view_of(input), view_of(partials) )
     |   stdexec::bulk(tileCount,
-        [=](std::size_t tileIdx, std::vector<ValueT>&& part)
+        [=](std::size_t tileIdx, auto in, auto parts)
         {
             auto const start = tileIdx * tileSize;
             auto const end   = std::min(inSize, (tileIdx + 1) * tileSize);
 
-            auto intermediate = ValueT(0);
             for (auto i = start; i < end; ++i) {
-                part[i] = redOp(intermediate, in1[i], in2[i]);
+                parts[tileIdx] = redOp(parts[tileIdx], in[i]);
             }
         })
-    |   stdexec::then([=](std::vector<ValueT>&& part)
+    |   stdexec::then([=](auto, auto parts)
         {
-            // return std::reduce(std::execution::par_unseq, begin(part), end(part), initValue);
-            return std::reduce(begin(part), end(part), initValue);
+            return std::reduce(begin(parts), end(parts), initValue);
         });
 
-    return stdexec::sync_wait(task).value();
+    return std::get<0>(stdexec::sync_wait(std::move(task)).value());
 }
 
+
+
+
+//-----------------------------------------------------------------------------
+template <
+    typename InRange1,
+    typename InRange2, 
+    typename Result,
+    typename ReductionOp
+>
+requires
+    std::ranges::random_access_range<InRange1> &&
+    std::ranges::random_access_range<InRange2> &&
+    std::ranges::sized_range<InRange1> &&
+    std::ranges::sized_range<InRange2> &&
+    PairReductionOperation<ReductionOp,Result>
+[[nodiscard]] Result 
+zip_reduce (
+    Execution_Context ctx,
+    InRange1 const& input1,
+    InRange2 const& input2,
+    Result initValue,
+    ReductionOp redOp)
+{
+    using size_t_ = std::common_type_t<std::ranges::range_size_t<InRange1>,
+                                       std::ranges::range_size_t<InRange2>>;
+
+    auto const inSize      = std::min(std::ranges::size(input1), std::ranges::size(input2));
+    auto const threadCount = std::min(inSize, static_cast<size_t_>(ctx.resource_shape().threads));
+    auto const tileSize    = (inSize + threadCount - 1) / threadCount;
+    auto const tileCount   = (inSize + tileSize - 1) / tileSize;
+
+    std::vector<Result> partials (tileCount, Result(0));
+
+    auto task = stdexec::transfer_just(ctx.get_scheduler(),
+                                       view_of(input1), view_of(input2),
+                                       view_of(partials))
+    |   stdexec::bulk(tileCount,
+        [=](std::size_t tileIdx, auto in1, auto in2, auto parts)
+        {
+            auto const start = tileIdx * tileSize;
+            auto const end   = std::min(inSize, (tileIdx + 1) * tileSize);
+
+            for (auto i = start; i < end; ++i) {
+                parts[tileIdx] = redOp(parts[tileIdx], in1[i], in2[i]);
+            }
+        })
+    |   stdexec::then([=](auto, auto, auto parts)
+        {
+            return std::reduce(begin(parts), end(parts), initValue);
+        });
+
+    return std::get<0>(stdexec::sync_wait(std::move(task)).value());
+}
+
+
+
+
+//-----------------------------------------------------------------------------
+template <
+    typename InRange1,
+    typename InRange2, 
+    typename Result,
+    typename ReductionOp
+>
+requires
+    std::ranges::random_access_range<InRange1> &&
+    std::ranges::random_access_range<InRange2> &&
+    std::ranges::sized_range<InRange1> &&
+    std::ranges::sized_range<InRange2> &&
+    std::copy_constructible<ReductionOp> &&
+    std::invocable<ReductionOp,Result,Result> &&
+    std::convertible_to<Result,std::invoke_result_t<ReductionOp,Result,Result>>
+[[nodiscard]] Result 
+zip_reduce_sum (
+    Execution_Context ctx,
+    InRange1 const& input1,
+    InRange2 const& input2,
+    Result initValue,
+    ReductionOp redOp)
+{
+    using size_t_ = std::common_type_t<std::ranges::range_size_t<InRange1>,
+                                       std::ranges::range_size_t<InRange2>>;
+
+    auto const inSize      = std::min(std::ranges::size(input1), std::ranges::size(input2));
+    auto const threadCount = std::min(inSize, static_cast<size_t_>(ctx.resource_shape().threads));
+    auto const tileSize    = (inSize + threadCount - 1) / threadCount;
+    auto const tileCount   = (inSize + tileSize - 1) / tileSize;
+
+    std::vector<Result> partials (tileCount, Result(0));
+
+    auto task = stdexec::transfer_just(ctx.get_scheduler(),
+                                       view_of(input1), view_of(input2),
+                                       view_of(partials))
+    |   stdexec::bulk(tileCount,
+        [=](std::size_t tileIdx, auto in1, auto in2, auto parts)
+        {
+            auto const start = tileIdx * tileSize;
+            auto const end   = std::min(inSize, (tileIdx + 1) * tileSize);
+
+            for (auto i = start; i < end; ++i) {
+                parts[tileIdx] += redOp(in1[i], in2[i]);
+            }
+        })
+    |   stdexec::then([=](auto, auto, auto parts)
+        {
+            return std::reduce(begin(parts), end(parts), initValue);
+        });
+
+    return std::get<0>(stdexec::sync_wait(std::move(task)).value());
+}
+
+
+#else
+
+
+//-----------------------------------------------------------------------------
+template <typename InRange, typename ResultValue, typename ReductionOp>
+requires
+    std::ranges::random_access_range<InRange> &&
+    std::ranges::sized_range<InRange> &&
+    ReductionOperation<ReductionOp,ResultValue>
+[[nodiscard]] ResultValue 
+reduce (
+    Execution_Context ctx,
+    InRange const& input, ResultValue initValue, ReductionOp redOp)
+{
+    auto task = 
+          stdexec::transfer_just(ctx.get_scheduler(), view_of(input))
+        | nvexec::reduce(initValue, cub::Min{});
+
+    return std::get<0>(stdexec::sync_wait(std::move(task)).value());
+}
+
+
+
+
+//-----------------------------------------------------------------------------
+template <
+    typename InRange1,
+    typename InRange2, 
+    typename Result,
+    typename ReductionOp
+>
+requires
+    std::ranges::random_access_range<InRange1> &&
+    std::ranges::random_access_range<InRange2> &&
+    std::ranges::sized_range<InRange1> &&
+    std::ranges::sized_range<InRange2> &&
+    PairReductionOperation<ReductionOp,Result>
+[[nodiscard]] Result 
+zip_reduce (
+    Execution_Context,
+    InRange1 const&,
+    InRange2 const&,
+    Result,
+    ReductionOp)
+{
+    throw "GPU-based zip_reduce not implemented yet";
+}
+
+
+
+
+//-----------------------------------------------------------------------------
+template <
+    typename InRange1,
+    typename InRange2, 
+    typename Result,
+    typename ReductionOp
+>
+requires
+    std::ranges::random_access_range<InRange1> &&
+    std::ranges::random_access_range<InRange2> &&
+    std::ranges::sized_range<InRange1> &&
+    std::ranges::sized_range<InRange2> &&
+    std::copy_constructible<ReductionOp> &&
+    std::invocable<ReductionOp,Result,Result> &&
+    std::convertible_to<Result,std::invoke_result_t<ReductionOp,Result,Result>>
+[[nodiscard]] Result 
+zip_reduce_sum (
+    Execution_Context,
+    InRange1 const&,
+    InRange2 const&,
+    Result,
+    ReductionOp)
+{
+    throw "GPU-based zip_reduce_sum not implemented yet";
+}
+
+
+#endif  // USE_GPU
 
 #endif

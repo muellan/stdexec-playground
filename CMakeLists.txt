@@ -37,32 +37,27 @@ CPMAddPackage("gh:kokkos/mdspan#stable")
 # CPMAddPackage("gh:catchorg/Catch2@3.2.1")
 
 
-# add_executable(nvc++test nvc++test.cpp)
-# target_compile_options(nvc++test PRIVATE "-U__PGI")
-# target_compile_features(nvc++test PRIVATE cxx_std_20)
-
-
 
 
 # CPU Test
-add_executable(cpu_test cpu_test.cpp)
+add_executable(cpu main.cpp)
 
-target_compile_features(cpu_test PRIVATE cxx_std_20)
+target_compile_features(cpu PRIVATE cxx_std_20)
 
-target_compile_options(cpu_test PRIVATE
+target_compile_options(cpu PRIVATE
     $<$<COMPILE_LANG_AND_ID:CXX,NVHPC>:-stdpar=multicore>
     # $<$<COMPILE_LANG_AND_ID:CXX,NVHPC>:-mp>
     # $<$<COMPILE_LANG_AND_ID:CXX,Clang>:-stdlib=libstdc++ -Wno-deprecated-builtins>
     $<$<COMPILE_LANG_AND_ID:CXX,Clang>:-Wno-deprecated-builtins>
 )
 
-# target_link_options(cpu_test PRIVATE
+# target_link_options(cpu PRIVATE
 #     # $<$<LINK_LANG_AND_ID:CXX,NVHPC>:-mp>
 #     $<$<LINK_LANG_AND_ID:CXX,NVHPC>:-stdpar=multicore>
 #     $<$<LINK_LANG_AND_ID:CXX,Clang>:-ltbb>
 # )
 
-target_link_libraries(cpu_test PRIVATE
+target_link_libraries(cpu PRIVATE
     pthread
     fmt::fmt
     STDEXEC::stdexec
@@ -70,28 +65,28 @@ target_link_libraries(cpu_test PRIVATE
 )
 
 if(OpenMP_CXX_FOUND)
-    target_link_libraries(cpu_test PRIVATE OpenMP::OpenMP_CXX)
+    target_link_libraries(cpu PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
 if (NOT CMAKE_CXX_COMPILER_ID MATCHES NVHPC)
-    target_link_libraries(cpu_test PRIVATE TBB::tbb)
-    # target_link_libraries(cpu_test PRIVATE OpenMP::OpenMP_CXX)
+    target_link_libraries(cpu PRIVATE TBB::tbb)
+    # target_link_libraries(cpu PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
 
 
 
-# GPU Test
-add_executable(gpu_test gpu_test.cpp)
+# Single GPU Test
+add_executable(gpu main.cpp)
 
-# set_source_files_properties(gpu_test.cpp PROPERTIES LANGUAGE ${_lang_gpu})
+# set_source_files_properties(main.cpp PROPERTIES LANGUAGE ${_lang_gpu})
 
-target_compile_definitions(gpu_test PRIVATE USE_GPU)
+target_compile_definitions(gpu PRIVATE USE_GPU)
 
-target_compile_features(gpu_test PRIVATE cxx_std_20)
-# target_compile_features(gpu_test PRIVATE cuda_std_20)
+target_compile_features(gpu PRIVATE cxx_std_20)
+# target_compile_features(gpu PRIVATE cuda_std_20)
 
-target_compile_options(gpu_test PRIVATE
+target_compile_options(gpu PRIVATE
     $<$<COMPILE_LANG_AND_ID:CXX,NVHPC>:-stdpar=gpu>
     # $<$<COMPILE_LANG_AND_ID:CXX,Clang>:-stdlib=libstdc++ -Wno-deprecated-builtins>
     "-Wall"
@@ -99,17 +94,52 @@ target_compile_options(gpu_test PRIVATE
     "-Wshadow"
 )
 
-target_link_options(gpu_test PRIVATE
+target_link_options(gpu PRIVATE
     $<$<LINK_LANG_AND_ID:CXX,NVHPC>:-cuda>
 )
 
-target_link_libraries(gpu_test PRIVATE
+target_link_libraries(gpu PRIVATE
     pthread
     fmt::fmt
     STDEXEC::stdexec
 )
 
 if(OpenMP_CXX_FOUND)
-    target_link_libraries(gpu_test PUBLIC OpenMP::OpenMP_CXX)
+    target_link_libraries(gpu PUBLIC OpenMP::OpenMP_CXX)
+endif()
+
+
+
+
+# Multi GPU Test
+add_executable(mgpu main.cpp)
+
+# set_source_files_properties(main.cpp PROPERTIES LANGUAGE ${_lang_gpu})
+
+target_compile_definitions(mgpu PRIVATE USE_GPU USE_MULTI_GPU)
+
+target_compile_features(mgpu PRIVATE cxx_std_20)
+# target_compile_features(mgpu PRIVATE cuda_std_20)
+
+target_compile_options(mgpu PRIVATE
+    $<$<COMPILE_LANG_AND_ID:CXX,NVHPC>:-stdpar=gpu>
+    # $<$<COMPILE_LANG_AND_ID:CXX,Clang>:-stdlib=libstdc++ -Wno-deprecated-builtins>
+    "-Wall"
+    "-Wextra"
+    "-Wshadow"
+)
+
+target_link_options(mgpu PRIVATE
+    $<$<LINK_LANG_AND_ID:CXX,NVHPC>:-cuda>
+)
+
+target_link_libraries(mgpu PRIVATE
+    pthread
+    fmt::fmt
+    STDEXEC::stdexec
+)
+
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(mgpu PUBLIC OpenMP::OpenMP_CXX)
 endif()
 

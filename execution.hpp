@@ -3,15 +3,15 @@
 
 
 #include <stdexec/execution.hpp>
+#include <exec/static_thread_pool.hpp>
 
 #ifdef USE_GPU
     #include <nvexec/stream_context.cuh>
     #include <nvexec/multi_gpu_context.cuh>
-#else
-    #include <exec/static_thread_pool.hpp>
 #endif
 // #include <exec/any_sender_of.hpp>
 
+#include <cstdint>                   
 #include <thread>                   
 #include <exception>                   
 
@@ -25,18 +25,17 @@ struct Void_Context {
 
 
 
-struct Execution_Shape
-{
-    int devices = 1;
-    int blocks  = 1;
-    int threads = 1;
-    int grid_dim[3]  {1,1,1};
-    int block_dim[3] {1,1,1};
-};
-
-
-
 #ifdef NO_STDEXEC
+
+struct Resource_Shape
+{
+    inline static constexpr int devices = 1;
+    inline static constexpr int grid_dims[3]  {1,1,1};
+    inline static constexpr int block_dims[3] {1,1,1};
+    inline static constexpr int block_threads = 1;
+    inline static constexpr int warp_threads  = 1;
+    inline static constexpr int threads = 1;
+};
 
 class Compute_Resource {
 public:
@@ -46,37 +45,60 @@ public:
     Compute_Resource (int = 0) {}
 
 private:
-    Execution_Shape shape_;
+    Resource_Shape shape_;
     Void_Context thread_pool_;
     Void_Context stream_context_;
 };
 
 #else   // NO_STDEXEC
 
+
 #ifdef USE_GPU
+
+struct Resource_Shape
+{
+    int devices = 1;
+    inline static constexpr int grid_dims[3]  {2147483647,65536,65536};
+    inline static constexpr int block_dims[3] {1024,1024,64};
+    inline static constexpr int block_threads = 1024;
+    inline static constexpr int warp_threads  = 32;
+    inline static constexpr std::int64_t threads = 2147483647L*65536L*65536L;
+};  
+
 class Compute_Resource {
 public:
     friend class Execution_Context;
 
     explicit
     Compute_Resource ():
-        // TODO query actual device capabilities
-        shape_{
-            .devices = 1,
-            .blocks  = 1,
-            .threads = 1024,
-            .grid_dim  {1,1,1},
-            .block_dim {1,1,1}
-        }
-    {}
+        shape_{ .devices = 1 }
+    {
+#ifdef USE_MULTI_GPU
+        cudaGetDeviceCount(&shape_.devices);
+#endif
+    }
 
 private:
-    Execution_Shape shape_;
+    Resource_Shape shape_;
+#ifdef USE_MULTI_GPU
+    nvexec::multi_gpu_stream_context stream_context_;
+#else
     nvexec::stream_context stream_context_; 
+#endif
+};
+       
+#else  // USE_GPU
+
+struct Resource_Shape
+{
+    inline static constexpr int devices       = 1;
+    inline static constexpr int grid_dims[3]  {1,1,1};
+    inline static constexpr int block_dims[3] {1,1,1};
+    inline static constexpr int block_threads = 1;
+    inline static constexpr int warp_threads  = 1;
+    int threads = 1;
 };
 
-#else  // USE_GPU
-       
 class Compute_Resource {
 public:
     friend class Execution_Context;
@@ -88,9 +110,10 @@ public:
     {}
 
 private:
-    Execution_Shape shape_;
+    Resource_Shape shape_;
     exec::static_thread_pool thread_pool_;
 };
+
 #endif  // USE_GPU
 #endif  // NO_STDEXEC
 
@@ -126,14 +149,13 @@ public:
     }
 
     [[nodiscard]]
-    Execution_Shape resource_shape () const noexcept { 
-        return static_cast<bool>(res_) ? res_->shape_ : Execution_Shape{};
+    Resource_Shape resource_shape () const noexcept { 
+        return static_cast<bool>(res_) ? res_->shape_ : Resource_Shape{};
     }
 
             
 private:
     Compute_Resource* res_ = nullptr;
-
 };
 
 
