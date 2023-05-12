@@ -75,8 +75,42 @@ void test_cpu_bulk ()
                 fmt::print("Hello from {}\n", id);
             });
 
-    stdexec::sync_wait(task).value();
+    stdexec::sync_wait(std::move(task)).value();
 }
+
+
+
+
+//-----------------------------------------------------------------------------
+// void test_scan (std::size_t nelems)
+// {
+//     fmt::print("CPU test scan\n");
+//
+//     bulk_vector<double> input (nelems);
+//     bulk_vector<double> output (nelems);
+//     random_engine urng;
+//     fill_random(input, urng);
+//     std::ranges::fill(output, 0.0);
+//     fmt::print("input ready\n");
+//
+//
+//     auto const nthreads = std::thread::hardware_concurrency();
+//
+//     exec::static_thread_pool tpool (nthreads);
+//     stdexec::scheduler auto sched = tpool.get_scheduler();
+//
+//     am::timer time;
+//     time.start();
+//
+//     auto task = inclusive_scan_async(sched, input, output, 0.0, nthreads);
+//
+//     stdexec::sync_wait(std::move(task)).value();
+//
+//     time.stop();
+//
+//     fmt::print("result: {}\n", output);
+//     fmt::print("time: {} ms\n", time.milliseconds());
+// }
 
 
 
@@ -95,7 +129,7 @@ void test_gpu_bulk ()
                 printf("Hello from %d\n", id);
             });
 
-    stdexec::sync_wait(task).value();
+    stdexec::sync_wait(std::move(task)).value();
 }
 #endif
 
@@ -123,13 +157,16 @@ void test_matrix_nn_sweep (std::size_t nrows, std::size_t ncols, int maxThreads)
     am::timer time;
     time.start();
 
-    transform_matrix_nearest_neigbors(sched, matrix, borderValue, maxThreads,
-    [](            double up,
-        double le, double mi, double re,
-                   double dn )
-    {
-        return 0.25 * (0.25*up + 0.25*le + 3.0*mi + 0.25*re + 0.25*dn);
-    });
+    auto task = transform_matrix_nearest_neigbors_async(
+        sched, matrix, borderValue, maxThreads,
+        [](            double up,
+            double le, double mi, double re,
+                    double dn )
+        {
+            return 0.25 * (0.25*up + 0.25*le + 3.0*mi + 0.25*re + 0.25*dn);
+        });
+
+    stdexec::sync_wait(std::move(task)).value();
 
     time.stop();
 
@@ -154,7 +191,7 @@ void matrix_sweep (stdexec::scheduler auto sched, span2d<double> matrix, std::si
             {
                 std::size_t const rstart = std::max(std::size_t(1), stripeIdx * stripeHeight);
                 std::size_t const rend   = std::min(m.nrows()-1, (stripeIdx+1) * stripeHeight);
-                
+
                 for (std::size_t r = rstart; r < rend; ++r) {
                     for (std::size_t c = 0; c < m.ncols(); ++c) {
                         m(r,c) = r * 10 + c;
@@ -196,7 +233,7 @@ void test_openmp (std::size_t nelems)
 #ifdef _OPENMP
     fmt::print("OpenMP {}\n", omp_get_num_threads());
 #endif
-    
+
     // using value_t = double;
     using value_t = vec3d;
     bulk_vector<value_t> input1 (nelems);
@@ -243,7 +280,7 @@ void test_stdpar (std::size_t nelems)
 
     am::timer time;
     time.start();
-    
+
     auto const idx = am::index_range{0,nelems};
     // std::for_each(
     // std::for_each(std::execution::unseq,
@@ -364,12 +401,21 @@ void test_generate_indexed (Execution_Context ctx, std::size_t nelems)
     am::timer time;
     time.start();
 
-    generate_indexed(ctx, output,
+    // generate_indexed(ctx, output,
+    //     [in1 = view_of(input1),
+    //      in2 = view_of(input2)] (std::size_t i) 
+    //     {
+    //         return cross(in1[i],in2[i]); 
+    //     });
+
+    auto task = generate_indexed_async(ctx, output,
         [in1 = view_of(input1),
          in2 = view_of(input2)] (std::size_t i) 
         {
             return cross(in1[i],in2[i]); 
         });
+
+    stdexec::sync_wait(std::move(task)).value();
 
     time.stop();
 
@@ -459,8 +505,10 @@ void test_reduce (Execution_Context ctx, std::size_t nelems)
     am::timer time;
     time.start();
 
-    auto const sum = reduce(ctx, input, 0.0,
+    auto task = reduce_async(ctx, input, 0.0,
         [](double total, double in) { return total + in; });
+
+    auto [sum] = stdexec::sync_wait(std::move(task)).value();
 
     time.stop();
 
@@ -560,7 +608,6 @@ int main (int argc, char* argv[])
 
     // test_value();
     // test_bulk();
-    // test_scan();
 
     // int const nrows = (argc > 1) ? std::atoi(argv[1]) : 10;
     // int const ncols = (argc > 2) ? std::atoi(argv[2]) : 10;
@@ -577,6 +624,8 @@ int main (int argc, char* argv[])
 
     int const nelems = (argc > 1) ? std::atoi(argv[1]) : 10;
 
+    // test_scan(nelems);
+
     // for (auto threads : {16,8,4,2,1}) {
     //     Compute_Resource cpr {threads};
     //     test_reduce(cpr, nelems);
@@ -588,8 +637,8 @@ int main (int argc, char* argv[])
     // test_generate_indexed(cpr, nelems);
     // test_transform(cpr, nelems);
     // test_zip_transform(cpr, nelems);
-    // test_reduce(cpr, nelems);
-    test_zip_reduce(cpr, nelems);
+    test_reduce(cpr, nelems);
+    // test_zip_reduce(cpr, nelems);
     // test_zip_reduce_sum(cpr, nelems);
 
     // int const na = (argc > 1) ? std::atoi(argv[1]) : 2;
