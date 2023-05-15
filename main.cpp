@@ -10,10 +10,47 @@
 #include <thrust/random.h>
 #endif
 
+#include <fmt/format.h>
 #include <fmt/ranges.h>
 
 #include <cstdio>
 #include <iostream>
+
+
+
+
+//-----------------------------------------------------------------------------
+template <>
+class fmt::formatter<vec3d>
+{
+    // format spec storage
+    char presentation_ = 'f';
+public:
+    // parse format specification and store it
+    constexpr auto 
+    parse (format_parse_context& ctx) { 
+        auto i = ctx.begin(), end = ctx.end();
+        if (i != end && (*i == 'f' || *i == 'e')) {
+            presentation_ = *i++;
+        }
+        if (i != end && *i != '}') {
+            throw format_error("invalid format");
+        }
+        return i;
+    }
+
+    // format value using stored specification
+    template <typename FmtContext>
+    constexpr auto 
+    format (vec3d const& v, FmtContext& ctx) const {
+        switch (presentation_) {
+            default:
+            // 'ctx.out()' is an output iterator
+            case 'f': return format_to(ctx.out(), "({:f},{:f},{:f})", v.x, v.y, v.z);
+            case 'e': return format_to(ctx.out(), "({:e},{:e},{:e})", v.x, v.y, v.z);
+        }  
+    }
+};
 
 
 
@@ -256,7 +293,7 @@ void test_openmp (std::size_t nelems)
     time.stop();
 
     auto const sum = std::accumulate(output.begin(), output.end(), vec3d{0.,0.,0.});
-    fmt::print("sum:  {} {} {}\n", sum.x, sum.y, sum.z);
+    fmt::print("sum:  {}\n", sum);
     fmt::print("time: {} ms\n", time.milliseconds());
 }
 
@@ -294,7 +331,7 @@ void test_stdpar (std::size_t nelems)
     time.stop();
 
     auto const sum = std::accumulate(output.begin(), output.end(), vec3d{0.,0.,0.});
-    fmt::print("sum:  {} {} {}\n", sum.x, sum.y, sum.z);
+    fmt::print("sum:  {}\n", sum);
     fmt::print("time: {} ms\n", time.milliseconds());
 }
 #endif
@@ -330,7 +367,7 @@ void test_for_each (Execution_Context ctx, std::size_t nelems)
     time.stop();
 
     auto const sum = std::accumulate(output.begin(), output.end(), vec3d{0.,0.,0.});
-    fmt::print("sum:     {} {} {}\n", sum.x, sum.y, sum.z);
+    fmt::print("sum:     {}\n", sum);
     fmt::print("devices: {}\n", ctx.resource_shape().devices);
     fmt::print("threads: {}\n", ctx.resource_shape().threads);
     fmt::print("time:    {} ms\n", time.milliseconds());
@@ -374,7 +411,7 @@ void test_for_each_grid_index (
     time.stop();
 
     auto const sum = std::accumulate(output.begin(), output.end(), vec3d{0.,0.,0.});
-    fmt::print("sum:     {} {} {}\n", sum.x, sum.y, sum.z);
+    fmt::print("sum:     {}\n", sum);
     fmt::print("devices: {}\n", ctx.resource_shape().devices);
     fmt::print("threads: {}\n", ctx.resource_shape().threads);
     fmt::print("time:    {} ms\n", time.milliseconds());
@@ -420,7 +457,7 @@ void test_generate_indexed (Execution_Context ctx, std::size_t nelems)
     time.stop();
 
     auto const sum = std::accumulate(output.begin(), output.end(), vec3d{0.,0.,0.});
-    fmt::print("sum:     {} {} {}\n", sum.x, sum.y, sum.z);
+    fmt::print("sum:     {}\n", sum);
     fmt::print("devices: {}\n", ctx.resource_shape().devices);
     fmt::print("threads: {}\n", ctx.resource_shape().threads);
     fmt::print("time:    {} ms\n", time.milliseconds());
@@ -483,7 +520,7 @@ void test_zip_transform (Execution_Context ctx, std::size_t nelems)
     time.stop();
 
     auto const sum = std::accumulate(output.begin(), output.end(), vec3d{0.,0.,0.});
-    fmt::print("sum:     {} {} {}\n", sum.x, sum.y, sum.z);
+    fmt::print("sum:     {}\n", sum);
     fmt::print("devices: {}\n", ctx.resource_shape().devices);
     fmt::print("threads: {}\n", ctx.resource_shape().threads);
     fmt::print("time:    {} ms\n", time.milliseconds());
@@ -548,7 +585,7 @@ void test_zip_reduce (Execution_Context ctx, std::size_t nelems)
 
     time.stop();
 
-    fmt::print("sum:     {} {} {}\n", sum.x, sum.y, sum.z);
+    fmt::print("sum:     {}\n", sum);
     fmt::print("devices: {}\n", ctx.resource_shape().devices);
     fmt::print("threads: {}\n", ctx.resource_shape().threads);
     fmt::print("time:    {} ms\n", time.milliseconds());
@@ -581,7 +618,7 @@ void test_zip_reduce_sum (Execution_Context ctx, std::size_t nelems)
 
     time.stop();
 
-    fmt::print("sum:     {} {} {}\n", sum.x, sum.y, sum.z);
+    fmt::print("sum:     {}\n", sum);
     fmt::print("devices: {}\n", ctx.resource_shape().devices);
     fmt::print("threads: {}\n", ctx.resource_shape().threads);
     fmt::print("time:    {} ms\n", time.milliseconds());
