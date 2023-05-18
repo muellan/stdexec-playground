@@ -1,14 +1,14 @@
 #ifndef SPAN2D_HPP_
 #define SPAN2D_HPP_
 
-#include "cuda_helpers.cuh"
+#include "acceleration.hpp"
 
 #ifdef USE_GPU
     #include <thrust/device_ptr.h>
+#else
+    #include <fmt/format.h>
+    #include <fmt/ranges.h>
 #endif
-
-#include <fmt/format.h>
-#include <fmt/ranges.h>
 
 
 //-----------------------------------------------------------------------------
@@ -58,8 +58,8 @@ public:
     HOSTDEVICEQUALIFIER
     constexpr auto ncols ()  const noexcept { return ncols_; }
 
-    HOSTDEVICEQUALIFIER
     [[nodiscard]]
+    HOSTDEVICEQUALIFIER
     constexpr auto nrows ()  const noexcept { return nrows_; }
 }; 
 
@@ -67,6 +67,7 @@ public:
 
 
 //-----------------------------------------------------------------------------
+#ifndef USE_GPU
 template <std::floating_point T>
 void print (span2d<T> const& s)
 {
@@ -86,5 +87,6 @@ void print (span2d<T> const& s)
         fmt::print("\n");
     }
 }
+#endif
 
 #endif

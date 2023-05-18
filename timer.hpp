@@ -7,7 +7,7 @@
 #include <chrono>
 
 
-namespace am {
+namespace ex {
 
 
 //-----------------------------------------------------------------------------
@@ -139,7 +139,7 @@ private:
 
 
 
-}  // namespace am
+}  // namespace ex
 
 
 #endif

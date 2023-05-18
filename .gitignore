@@ -1,2 +1,4 @@
 build*
 compile_commands.json
+*_gpu.cpp
+^hello_gpu.cpp

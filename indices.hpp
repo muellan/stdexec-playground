@@ -7,7 +7,7 @@
 #include <cstdint>
 
 
-namespace am {
+namespace ex {
 
 
 //-----------------------------------------------------------------------------
@@ -126,6 +126,10 @@ public:
 
 
     [[nodiscard]] constexpr
+    value_type const* data () const noexcept { return &beg_; }
+
+
+    [[nodiscard]] constexpr
     size_type size () const noexcept { return end_ - beg_; }
 
     [[nodiscard]] constexpr
@@ -149,7 +153,7 @@ public:
 
 
 [[nodiscard]] inline constexpr auto
-view_of (index_range const& s) noexcept { return s; }
+make_view (index_range const& s) noexcept { return s; }
 
 
 
@@ -460,7 +464,7 @@ using index5 = index<5>;
 // index_grid (index<N,T> const&, index<N,T> const&) -> index_grid<N>;
 
 
-}  // namespace am
+}  // namespace ex
 
 #endif
 
